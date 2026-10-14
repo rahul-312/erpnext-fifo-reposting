@@ -118,10 +118,14 @@ def _validate(doc, item_code, new_rate):
 	if frozen_upto and getdate(doc.posting_date) <= getdate(frozen_upto):
 		frappe.throw(_("Stock transactions before {0} are frozen").format(frozen_upto))
 
-	# a still-running repost for the same item/warehouse would race with ours
+	# a still-running repost for the same item/warehouse would race with ours. Voucher-based
+	# reposts leave item_code empty, so any running one for the company blocks too (conservative).
 	running = frappe.db.exists(
 		"Repost Item Valuation",
 		{"docstatus": 1, "status": "In Progress", "item_code": item_code, "company": doc.company},
+	) or frappe.db.exists(
+		"Repost Item Valuation",
+		{"docstatus": 1, "status": "In Progress", "based_on": "Transaction", "company": doc.company},
 	)
 	if running:
 		frappe.throw(_("Repost {0} is in progress for {1}; try again once it completes").format(running, item_code))

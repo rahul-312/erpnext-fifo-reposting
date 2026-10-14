@@ -2,8 +2,8 @@
 End-to-end run of the assignment on a real ERPNext site.
 
     cd ~/frappe-bench
-    env/bin/python stock_repost_assignment/erpnext_demo/run_e2e.py                 # dry run: everything rolled back
-    env/bin/python stock_repost_assignment/erpnext_demo/run_e2e.py --commit        # keep the documents to inspect in Desk
+    env/bin/python erpnext-fifo-reposting/erpnext_demo/run_e2e.py                 # dry run: everything rolled back
+    env/bin/python erpnext-fifo-reposting/erpnext_demo/run_e2e.py --commit        # keep the documents to inspect in Desk
 
 What it does, exactly as the task is worded:
     Opening stock     Milk 100 L @ 50            (Stock Reconciliation, "Opening Stock")
@@ -19,7 +19,7 @@ It prints the stock ledger and GL before/after, and checks every number against 
 framework-independent design in fifo_repost/engine.py.
 
 Isolation: everything is created in its own company ("Milk Repost Demo") and a fresh
-warehouse. Custom apps' hooks (e.g. shrimp_processing) are disabled *in this process
+warehouse. Other custom apps' hooks are disabled *in this process
 only*, so the run behaves like vanilla ERPNext. Nothing on disk or in site config changes.
 """
 
@@ -29,7 +29,7 @@ import sys
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)  # stock_repost_assignment/
+ROOT = os.path.dirname(HERE)  # erpnext-fifo-reposting/
 BENCH = os.path.dirname(ROOT)
 sys.path[:0] = [HERE, ROOT]
 
@@ -379,6 +379,7 @@ def main():
 
 	real_commit = real_rollback = None
 	failures = 0
+	completed = False
 	try:
 		if not args.keep_custom_apps:
 			hidden = isolate_custom_apps()
@@ -444,14 +445,18 @@ def main():
 			f"{cogs(gl_after, names['DN-0125']):g}   |   Milk COGS ({names['DN-0115']}): "
 			f"{cogs(gl_before, names['DN-0115']):g} -> {cogs(gl_after, names['DN-0115']):g}"
 		)
+		completed = True
 	finally:
 		if real_rollback:
 			frappe.db.commit, frappe.db.rollback = real_commit, real_rollback
 			frappe.db.rollback()
 			print("\n[teardown] rolled back - the site is unchanged")
-		elif args.commit:
+		elif args.commit and completed:
 			frappe.db.commit()
 			print(f"\n[teardown] committed - open company '{COMPANY}' in Desk to inspect")
+		elif args.commit:
+			frappe.db.rollback()
+			print("\n[teardown] run failed - uncommitted changes rolled back (ERPNext's repost may already have committed some)")
 		frappe.destroy()
 
 	sys.exit(1 if failures else 0)

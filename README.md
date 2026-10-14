@@ -1,5 +1,7 @@
 # Stock Reposting and Valuation Issue: Solution
 
+![tests](https://github.com/rahul-312/erpnext-fifo-reposting/actions/workflows/tests.yml/badge.svg)
+
 ## The task (as given)
 
 Milk and Milk Powder both use the **FIFO** valuation method.
@@ -43,11 +45,11 @@ flowchart LR
 | **20-Jan PR** | running balance 7,000 → 8,000, queue rewritten | none |
 | **21-Jan Manufacture (Milk out)** | consumes 20@50 + **50@80** + 30@60: 5,800 → **6,800** | RM credit 5,800 → 6,800 |
 | **21-Jan Manufacture (Milk Powder in)** | FG rate = RM cost / qty: ₹580 → **₹680/kg** (*a different item*) | FG debit 5,800 → 6,800 |
-| **25-Jan DN (Milk Powder)** | COGS 5,800 → **6,800** | COGS ↑ ₹2,000, profit ↓ ₹2,000 |
+| **25-Jan DN (Milk Powder)** | COGS 5,800 → **6,800** | COGS ↑ ₹1,000, profit ↓ ₹1,000 |
 
 The rule: every SLE of the same item and warehouse posted at or after the edited voucher is affected, plus every SLE of each dependent item (Manufacture/Repack finished goods, transfer targets) from that dependent voucher onward.
 
-**Net effect:** the extra ₹2,000 moves PR → Milk queue → Manufacture → Milk Powder → COGS. Closing Milk stock is still 20 L @ ₹60 = ₹1,200.
+**Net effect:** the extra ₹1,000 moves PR → Milk queue → Manufacture → Milk Powder → COGS. Closing Milk stock is still 20 L @ ₹60 = ₹1,200.
 
 ---
 
@@ -61,7 +63,7 @@ Replay FIFO from the last known-good state. Never patch the numbers.
 | 10 | PR | `[100@50]` | | **+4,000** | `[100@50, 50@80]` | 9,000 |
 | 15 | DN | `[100@50, 50@80]` | 80@50 | −4,000 | `[20@50, 50@80]` | 5,000 |
 | 20 | PR | `[20@50, 50@80]` | | +3,000 | `[20@50, 50@80, 50@60]` | 8,000 |
-| 21 | SE Milk | ↑ | 20@50 + 50@80 + 30@60 | **−6,800** | `[20@60]` | 1,200 |
+| 21 | SE Milk | `[20@50, 50@80, 50@60]` | 20@50 + 50@80 + 30@60 | **−6,800** | `[20@60]` | 1,200 |
 | 21 | SE Powder | `[]` | | **+6,800** (6,800/10 = 680) | `[10@680]` | 6,800 |
 | 25 | DN Powder | `[10@680]` | 10@680 | **−6,800** | `[]` | 0 |
 
@@ -95,7 +97,7 @@ Design rules:
 
 1. **Valuation is a function of history.** For a given (item, warehouse), the state at time T depends only on entries before T.
 2. **Start from the previous SLE's `stock_queue`**, not from the beginning of time.
-3. **Replay, never patch.** FIFO decides *which* outgoing entry consumes the re-rated batch. A "+₹2,000 on every later row" patch can't know that.
+3. **Replay, never patch.** FIFO decides *which* outgoing entry consumes the re-rated batch. A "+₹1,000 on every later row" patch can't know that.
 4. **Strict ordering:** `posting_date, posting_time, creation`.
 5. **Dependency graph across items:** Manufacture and Repack push the new RM cost to the FG item, which gets its own repost from that voucher's time. Duplicate entries for the same item and warehouse are merged into one, starting at the earliest time.
 6. **Asynchronous, resumable, idempotent.** A queued job keeps `items_to_be_repost` and `current_index` as a checkpoint, so a crashed worker can resume. Running it twice gives the same result.
@@ -129,14 +131,16 @@ The alternative is storing only movements and computing balances when reading. T
 ## Q5. Implementation
 
 ```
-stock_repost_assignment/
+erpnext-fifo-reposting/
 ├── README.md                 ← this file (answers Q1–Q4)
 ├── fifo_repost/
 │   ├── engine.py             ← design: FIFO queue, SLEs with running balances, repost job
 │   │                            (checkpointed), cross-item dependency, GL regeneration,
 │   │                            naive patch anti-pattern (Q4)
 │   └── demo.py               ← prints before/after, Q1 impact list, GL diff, Q4, crash+resume
-├── tests/test_engine.py      ← 13 unit tests asserting every number above
+├── tests/test_engine.py      ← 16 unit tests asserting every number above, plus a
+│                                back-dated new entry and a scrap row
+├── .github/workflows/tests.yml ← runs the unit tests on every push
 └── erpnext_demo/
     ├── rate_change.py        ← THE CODE CHANGE for ERPNext: update_purchase_receipt_rate()
     └── run_e2e.py            ← runs the whole scenario on a real ERPNext site and verifies
@@ -154,18 +158,37 @@ ERPNext doesn't allow editing the rate of a submitted Purchase Receipt. *Cancel 
 5. Optionally process it now (otherwise the scheduler picks it up).
 6. Add an audit comment on the PR.
 
+Side effects and limits, worth knowing before using it outside the demo:
+
+- The re-rated row's `price_list_rate` and discounts are cleared, so the new rate is taken as is.
+- The "repost already running" check is best-effort. Item-based reposts are matched by `item_code`; voucher-based reposts leave `item_code` empty, so any voucher-based repost running for the company blocks the edit too.
+- `process_now=True` runs the repost inside the web request. That's fine for the demo; in production leave it to the scheduler.
+
+### Not modelled in `engine.py`
+
+- **Material Transfer.** Q1's rule and design rule 5 list transfer targets as dependants because ERPNext treats them that way. The design engine only implements the Manufacture/Repack dependency, which is the one the assignment needs.
+
+### Assumptions
+
+- One warehouse (`Stores`), and each day's transactions posted at 10:00 (opening at 09:00).
+- No taxes or additional costs on the Manufacture entry, so the finished good's cost is just the raw material consumed (minus any scrap value).
+- The 10-Jan Purchase Receipt isn't billed yet. If it were, the rate change belongs on the Purchase Invoice.
+- `engine.py` rounds to 6 decimal places; ERPNext uses its own precision settings.
+
 ### How to run
+
+Requires Python 3.10+. The design engine and tests use only the standard library, so there's nothing to install.
 
 ```bash
 # design engine (no ERPNext needed)
-cd stock_repost_assignment
+cd erpnext-fifo-reposting
 python3 -m unittest discover -s tests -t .
 python3 -m fifo_repost.demo
 
 # real ERPNext, end to end (dry run: everything rolled back)
-cd ~/frappe-bench
-env/bin/python stock_repost_assignment/erpnext_demo/run_e2e.py
-env/bin/python stock_repost_assignment/erpnext_demo/run_e2e.py --commit   # keep docs to inspect in Desk
+cd ~/frappe-bench   # clone this repo inside frappe-bench/: the script treats its parent folder as the bench
+env/bin/python erpnext-fifo-reposting/erpnext_demo/run_e2e.py
+env/bin/python erpnext-fifo-reposting/erpnext_demo/run_e2e.py --commit   # keep docs to inspect in Desk
 ```
 
 `run_e2e.py` creates its own company (*Milk Repost Demo*) and a new warehouse. It disables other custom apps' hooks for its own process only, so the run behaves like vanilla ERPNext. It prints the ledger before and after, the affected transactions, the GL diff, and `VERIFY … PASS` when ERPNext's numbers match the design engine.

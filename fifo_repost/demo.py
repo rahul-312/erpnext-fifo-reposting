@@ -1,5 +1,5 @@
 """
-Run:  python3 -m fifo_repost.demo        (from the stock_repost_assignment folder)
+Run:  python3 -m fifo_repost.demo        (from the erpnext-fifo-reposting folder)
 
 Walks through the assignment exactly as asked:
   - builds the January transactions

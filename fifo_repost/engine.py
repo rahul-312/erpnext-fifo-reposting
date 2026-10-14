@@ -22,6 +22,9 @@ Key design rules (see README for the reasoning):
      and replay every SLE at/after T in strict order. Never patch deltas.
   3. When an outgoing entry of a Manufacture/Repack changes value, the finished
      good's incoming rate changes -> enqueue (FG item, FG warehouse, voucher time).
+     Only rows flagged is_finished_item absorb the cost; scrap keeps its own rate.
+     Material Transfers are not modelled here (ERPNext treats the target warehouse
+     as a dependant in the same way).
   4. After stock is consistent, regenerate GL only for vouchers whose stock value
      actually changed.
   5. The job is resumable (current_index checkpoint) and idempotent.
@@ -203,16 +206,19 @@ class Ledger:
 			self.sles.append(sle)
 			new_sles.append(sle)
 
+		# backdated entry? -> future rows of the same item/warehouse must be reposted.
+		# Decide before valuing: only the new rows are valued here, later rows keep their
+		# stored values so the repost job can detect what changed and follow dependants.
+		backdated = [sle for sle in new_sles if any(s.key == sle.key and s.sort_key > sle.sort_key for s in self.sles)]
+
 		# value the new rows, in order
 		for sle in new_sles:
-			self._repost_from(sle.item_code, sle.warehouse, sle.posting, job=None)
+			self._repost_from(sle.item_code, sle.warehouse, sle.posting, job=None, stop_after=sle)
 
 		self._make_gl(voucher.voucher_no)
 
-		# backdated entry? -> future rows of the same item/warehouse must be reposted
-		for sle in new_sles:
-			if any(s.key == sle.key and s.sort_key > sle.sort_key for s in self.sles):
-				self.enqueue_repost(sle.item_code, sle.warehouse, sle.posting)
+		for sle in backdated:
+			self.enqueue_repost(sle.item_code, sle.warehouse, sle.posting)
 
 	# ---------------- the user edit -----------------
 	def update_purchase_receipt_rate(self, voucher_no: str, item_code: str, new_rate: float) -> RepostJob:
@@ -266,8 +272,10 @@ class Ledger:
 		self.repost_gl(job.affected_vouchers)
 		job.status = "Completed"
 
-	def _repost_from(self, item_code, warehouse, posting, job: RepostJob | None) -> None:
-		"""Replay FIFO for one (item, warehouse) from `posting` onwards."""
+	def _repost_from(
+		self, item_code, warehouse, posting, job: RepostJob | None, stop_after: StockLedgerEntry | None = None
+	) -> None:
+		"""Replay FIFO for one (item, warehouse) from `posting` onwards (up to `stop_after`, if given)."""
 		rows = sorted((s for s in self.sles if s.key == (item_code, warehouse)), key=lambda s: s.sort_key)
 
 		previous = [s for s in rows if s.posting < posting]
@@ -294,6 +302,8 @@ class Ledger:
 			sle.stock_value_difference = _r(sle.stock_value - prev_value)
 			prev_value = sle.stock_value
 
+			if sle is stop_after:
+				break
 			if job is None:
 				continue
 
@@ -307,8 +317,8 @@ class Ledger:
 	def _add_dependents(self, job: RepostJob, voucher_no: str) -> None:
 		voucher = self.vouchers[voucher_no]
 		for line in voucher.lines:
-			if line.direction == "in":
-				dep = {"item_code": line.item_code, "warehouse": line.warehouse, "posting": voucher.posting}
+			if line.direction == "in" and line.is_finished_item:
+				dep ={"item_code": line.item_code, "warehouse": line.warehouse, "posting": voucher.posting}
 				pending = job.items_to_be_repost[job.current_index + 1 :]
 				# de-duplicate: keep only the earliest pending posting per item/warehouse
 				existing = next(
@@ -324,18 +334,20 @@ class Ledger:
 		v = self.vouchers[voucher_no]
 		return v.voucher_type == "Stock Entry" and v.purpose in ("Manufacture", "Repack")
 
+	def _line(self, sle: StockLedgerEntry) -> VoucherLine:
+		return next(l for l in self.vouchers[sle.voucher_no].lines if l.name == sle.voucher_detail_no)
+
 	def _is_finished_good_row(self, sle: StockLedgerEntry) -> bool:
-		return self._is_manufacture(sle.voucher_no)
+		# scrap / by-product rows keep their own rate; only the finished item absorbs RM cost
+		return self._is_manufacture(sle.voucher_no) and self._line(sle).is_finished_item
 
 	def _fg_rate(self, fg_sle: StockLedgerEntry) -> float:
-		"""FG incoming rate = value of raw material consumed in the same voucher / FG qty."""
-		rm_value = sum(
-			-s.stock_value_difference
-			for s in self.sles
-			if s.voucher_no == fg_sle.voucher_no and s.actual_qty < 0
-		)
-		fg_qty = sum(s.actual_qty for s in self.sles if s.voucher_no == fg_sle.voucher_no and s.actual_qty > 0)
-		return _r(rm_value / fg_qty)
+		"""FG incoming rate = (raw material consumed - scrap value) in the same voucher / FG qty."""
+		rows = [s for s in self.sles if s.voucher_no == fg_sle.voucher_no]
+		rm_value = sum(-s.stock_value_difference for s in rows if s.actual_qty < 0)
+		scrap_value = sum(s.actual_qty * s.incoming_rate for s in rows if s.actual_qty > 0 and not self._is_finished_good_row(s))
+		fg_qty = sum(s.actual_qty for s in rows if s.actual_qty > 0 and self._is_finished_good_row(s))
+		return _r((rm_value - scrap_value) / fg_qty)
 
 	# ---------------- GL -----------------
 	def repost_gl(self, voucher_nos: set[str]) -> None:
