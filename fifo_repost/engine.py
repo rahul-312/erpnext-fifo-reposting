@@ -318,7 +318,7 @@ class Ledger:
 		voucher = self.vouchers[voucher_no]
 		for line in voucher.lines:
 			if line.direction == "in" and line.is_finished_item:
-				dep ={"item_code": line.item_code, "warehouse": line.warehouse, "posting": voucher.posting}
+				dep = {"item_code": line.item_code, "warehouse": line.warehouse, "posting": voucher.posting}
 				pending = job.items_to_be_repost[job.current_index + 1 :]
 				# de-duplicate: keep only the earliest pending posting per item/warehouse
 				existing = next(
