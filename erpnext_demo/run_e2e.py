@@ -19,8 +19,7 @@ It prints the stock ledger and GL before/after, and checks every number against 
 framework-independent design in fifo_repost/engine.py.
 
 Isolation: everything is created in its own company ("Milk Repost Demo") and a fresh
-warehouse. Other custom apps' hooks are disabled *in this process
-only*, so the run behaves like vanilla ERPNext. Nothing on disk or in site config changes.
+warehouse. Nothing on disk or in site config changes.
 """
 
 import argparse
@@ -50,47 +49,6 @@ def connect(site):
 	frappe.init(site=site, sites_path=sites_path)
 	frappe.connect()
 	frappe.set_user("Administrator")
-
-
-def isolate_custom_apps(keep=("frappe", "erpnext")):
-	"""Hide hooks of other installed apps for this process, so the demo runs on vanilla ERPNext."""
-	custom = [a for a in frappe.get_installed_apps() if a not in keep]
-	if not custom:
-		return []
-	prefixes = tuple(f"{a}." for a in custom)
-	original = frappe.get_hooks
-
-	def strip(value):
-		if isinstance(value, str):
-			return None if value.startswith(prefixes) else value
-		if isinstance(value, list):
-			return [v for v in (strip(v) for v in value) if v is not None]
-		if isinstance(value, dict):
-			return frappe._dict({k: strip(v) for k, v in value.items()})
-		return value
-
-	def get_hooks(hook=None, default="_KEEP_DEFAULT_LIST", app_name=None):
-		return strip(original(hook, default, app_name))
-
-	frappe.get_hooks = get_hooks
-	frappe.local.doc_events_hooks = None
-	frappe.controllers.pop(frappe.local.site, None)
-	return custom
-
-
-def tolerate_missing_contact_field():
-	"""Some sites lack ERPNext's `Contact.is_billing_contact` custom field (created at install).
-	Without it every PR/DN fails while looking up the party's default contact. The demo parties
-	have no contacts, so for this process only we short-circuit that lookup instead of altering
-	the site schema. Repair permanently with:
-	    bench --site <site> execute erpnext.setup.install.create_address_and_contact_custom_fields
-	"""
-	if frappe.db.has_column("Contact", "is_billing_contact"):
-		return False
-	import erpnext.accounts.party as party
-
-	party.get_default_contact = lambda doctype, name: None
-	return True
 
 
 def guard_transaction():
@@ -366,7 +324,6 @@ def main():
 	parser.add_argument("--site", default=None, help="site name (default: bench default_site)")
 	parser.add_argument("--year", type=int, default=2026, help="year of the January transactions (default 2026)")
 	parser.add_argument("--commit", action="store_true", help="persist the demo documents instead of rolling back")
-	parser.add_argument("--keep-custom-apps", action="store_true", help="do not disable other apps' hooks")
 	args = parser.parse_args()
 
 	site = args.site or frappe.parse_json(open(os.path.join(BENCH, "sites", "common_site_config.json")).read()).get(
@@ -381,16 +338,6 @@ def main():
 	failures = 0
 	completed = False
 	try:
-		if not args.keep_custom_apps:
-			hidden = isolate_custom_apps()
-			if hidden:
-				print(f"[setup] hooks of {', '.join(hidden)} disabled for this process (vanilla ERPNext behaviour)")
-		if tolerate_missing_contact_field():
-			print(
-				"[setup] WARNING: site is missing ERPNext custom field Contact.is_billing_contact; default-contact "
-				"lookup skipped for this process. Repair: bench --site "
-				f"{site} execute erpnext.setup.install.create_address_and_contact_custom_fields"
-			)
 		if not args.commit:
 			real_commit, real_rollback = guard_transaction()
 			print("[setup] dry run: all changes will be rolled back at the end (use --commit to keep them)")

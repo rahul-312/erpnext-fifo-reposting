@@ -190,7 +190,7 @@ env/bin/python erpnext-fifo-reposting/erpnext_demo/run_e2e.py
 env/bin/python erpnext-fifo-reposting/erpnext_demo/run_e2e.py --commit   # keep docs to inspect in Desk
 ```
 
-`run_e2e.py` creates its own company (*Milk Repost Demo*) and a new warehouse. It disables other custom apps' hooks for its own process only, so the run behaves like vanilla ERPNext. It prints the ledger before and after, the affected transactions, the GL diff, and `VERIFY … PASS` when ERPNext's numbers match the design engine.
+`run_e2e.py` needs an ERPNext v15 site; other installed apps' hooks run as usual, so use a site without custom apps that change stock or accounting behaviour. It creates its own company (*Milk Repost Demo*) and a new warehouse. It prints the ledger before and after, the affected transactions, the GL diff, and `VERIFY … PASS` when ERPNext's numbers match the design engine.
 
 ### Result on ERPNext v15.122
 
