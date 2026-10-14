@@ -19,6 +19,22 @@ Milk and Milk Powder both use the **FIFO** valuation method.
 
 ---
 
+## Approach and design decisions
+
+**Approach.** I first worked the scenario out by hand (Q1, Q2), then built a small framework-independent engine that mirrors ERPNext's stock ledger and repost job (`fifo_repost/engine.py`), with tests pinning every number. Then I made the actual ERPNext change (`erpnext_demo/rate_change.py`) and ran the whole scenario on a real ERPNext v15 site, checking ERPNext's ledger against the engine row by row.
+
+**Decisions:**
+
+1. **Replay FIFO, never patch the numbers.** Restore the FIFO queue from the last entry before 10 Jan and replay every later entry. Only a replay knows *which* outgoing entry consumes the re-rated batch: here the 15 Jan delivery is unaffected and the 21 Jan manufacture absorbs the ₹1,000. ([Q2](#q2-how-should-erpnext-recalculate-the-valuation-of-the-subsequent-transactions), [Q3](#q3-how-would-you-design-the-reposting-logic-for-fifo))
+2. **Strict order:** posting date, posting time, then creation, so the result is deterministic.
+3. **Follow dependencies across items.** When a Manufacture's raw-material cost changes, the finished good (Milk Powder) is reposted from that entry, which carries the cost through to COGS.
+4. **Asynchronous, resumable, idempotent.** The repost runs as a queued job that checkpoints its progress, so a crash resumes where it stopped and running it twice gives the same result.
+5. **GL last, and only where stock value changed.** The 15 Jan delivery's ledger balance is rewritten, but its GL isn't touched.
+6. **Edit the receipt through the Landed Cost Voucher path, not cancel + amend.** Cancelling the 10 Jan receipt would make the 21 Jan manufacture go negative. Reusing ERPNext's existing revaluation path keeps the change small and lets ERPNext's own repost engine do the rest. ([code change](#the-erpnext-code-change-erpnext_demorate_changepy))
+7. **Keep ERPNext's stored running balances.** They make reads fast at the cost of rewriting later rows on every back-dated change; [Q4](#q4-what-problems-occur-if-every-sle-stores-a-running-balance) lists the problems that brings and how the design above contains them.
+
+---
+
 ## Q1. What transactions in Stock should be affected by this change?
 
 ```mermaid
@@ -132,7 +148,7 @@ The alternative is storing only movements and computing balances when reading. T
 
 ```
 erpnext-fifo-reposting/
-├── README.md                 ← this file (answers Q1–Q4)
+├── README.md                 ← this file (approach, design decisions, answers Q1–Q4)
 ├── fifo_repost/
 │   ├── engine.py             ← design: FIFO queue, SLEs with running balances, repost job
 │   │                            (checkpointed), cross-item dependency, GL regeneration,
