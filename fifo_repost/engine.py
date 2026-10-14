@@ -22,7 +22,7 @@ Key design rules (see README for the reasoning):
      and replay every SLE at/after T in strict order. Never patch deltas.
   3. When an outgoing entry of a Manufacture/Repack changes value, the finished
      good's incoming rate changes -> enqueue (FG item, FG warehouse, voucher time).
-     Only rows flagged is_finished_item absorb the cost; scrap keeps its own rate.
+     Only rows flagged is_finished_item absorb the cost.
      Material Transfers are not modelled here (ERPNext treats the target warehouse
      as a dependant in the same way).
   4. After stock is consistent, regenerate GL only for vouchers whose stock value
@@ -338,16 +338,14 @@ class Ledger:
 		return next(l for l in self.vouchers[sle.voucher_no].lines if l.name == sle.voucher_detail_no)
 
 	def _is_finished_good_row(self, sle: StockLedgerEntry) -> bool:
-		# scrap / by-product rows keep their own rate; only the finished item absorbs RM cost
 		return self._is_manufacture(sle.voucher_no) and self._line(sle).is_finished_item
 
 	def _fg_rate(self, fg_sle: StockLedgerEntry) -> float:
-		"""FG incoming rate = (raw material consumed - scrap value) in the same voucher / FG qty."""
+		"""FG incoming rate = value of raw material consumed in the same voucher / FG qty."""
 		rows = [s for s in self.sles if s.voucher_no == fg_sle.voucher_no]
 		rm_value = sum(-s.stock_value_difference for s in rows if s.actual_qty < 0)
-		scrap_value = sum(s.actual_qty * s.incoming_rate for s in rows if s.actual_qty > 0 and not self._is_finished_good_row(s))
 		fg_qty = sum(s.actual_qty for s in rows if s.actual_qty > 0 and self._is_finished_good_row(s))
-		return _r((rm_value - scrap_value) / fg_qty)
+		return _r(rm_value / fg_qty)
 
 	# ---------------- GL -----------------
 	def repost_gl(self, voucher_nos: set[str]) -> None:

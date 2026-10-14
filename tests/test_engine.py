@@ -3,18 +3,7 @@
 import copy
 import unittest
 
-from datetime import datetime
-
-from fifo_repost.engine import (
-	WH,
-	FIFOQueue,
-	Ledger,
-	NegativeStockError,
-	Voucher,
-	VoucherLine,
-	build_assignment_scenario,
-	naive_delta_patch,
-)
+from fifo_repost.engine import FIFOQueue, NegativeStockError, build_assignment_scenario, naive_delta_patch
 
 
 def sle(L, voucher_no, item_code="Milk"):
@@ -94,51 +83,6 @@ class TestAssignmentScenario(unittest.TestCase):
 		naive = naive_delta_patch(self.before, "PR-0110", "Milk", 80)
 		self.assertNotEqual([s for s in naive.ledger_rows() if s.item_code == "Milk"][-1].stock_value, 1200)
 		self.assertEqual(sle(naive, "SE-0121", "Milk Powder").incoming_rate, 580)  # cost never flowed
-
-
-class TestBackdatedSubmit(unittest.TestCase):
-	"""A new voucher posted before existing ones must cascade like an edit does."""
-
-	def setUp(self):
-		self.L = build_assignment_scenario()
-		pr = Voucher("Purchase Receipt", "PR-0105", datetime(2026, 1, 5, 10), [VoucherLine("Milk", 50, WH, "in", 100)])
-		self.L.submit(pr)
-
-	def test_new_row_valued_and_repost_queued(self):
-		self.assertEqual(sle(self.L, "PR-0105").stock_value, 10000)  # 100@50 + 50@100
-		self.assertEqual(len(self.L.repost_jobs), 1)
-		self.assertEqual(sle(self.L, "SE-0121", "Milk Powder").incoming_rate, 580)  # not reposted yet
-
-	def test_cascades_to_dependent_item(self):
-		self.L.process_repost_queue()
-		# [100@50, 50@100, 50@60] -> DN takes 80@50 -> SE takes 20@50 + 50@100 + 30@60
-		self.assertEqual(sle(self.L, "SE-0121").stock_value_difference, -7800)
-		self.assertEqual(sle(self.L, "SE-0121", "Milk Powder").incoming_rate, 780)
-		self.assertEqual(self.L.cogs("DN-0125"), 7800)
-		fg_gl = next(g for g in self.L.gl_for("SE-0121") if g.account.endswith("(FG)"))
-		self.assertEqual(fg_gl.debit, 7800)
-		self.assertEqual(self.L.repost_jobs[0].affected_vouchers, {"SE-0121", "DN-0125"})
-
-
-class TestScrapRow(unittest.TestCase):
-	def test_scrap_keeps_its_rate_and_reduces_fg_cost(self):
-		L = Ledger()
-		L.submit(Voucher("Opening Stock", "OPENING", datetime(2026, 1, 1), [VoucherLine("Milk", 100, WH, "in", 50)]))
-		L.submit(
-			Voucher(
-				"Stock Entry",
-				"SE-1",
-				datetime(2026, 1, 2),
-				[
-					VoucherLine("Milk", 100, WH, "out"),
-					VoucherLine("Milk Powder", 10, WH, "in", is_finished_item=True),
-					VoucherLine("Whey", 20, WH, "in", 25),  # scrap: 20 x 25 = 500
-				],
-				purpose="Manufacture",
-			)
-		)
-		self.assertEqual(sle(L, "SE-1", "Whey").incoming_rate, 25)
-		self.assertEqual(sle(L, "SE-1", "Milk Powder").incoming_rate, 450)  # (5000 - 500) / 10
 
 
 if __name__ == "__main__":

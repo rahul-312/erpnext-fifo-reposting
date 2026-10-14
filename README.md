@@ -138,8 +138,7 @@ erpnext-fifo-reposting/
 │   │                            (checkpointed), cross-item dependency, GL regeneration,
 │   │                            naive patch anti-pattern (Q4)
 │   └── demo.py               ← prints before/after, Q1 impact list, GL diff, Q4, crash+resume
-├── tests/test_engine.py      ← 16 unit tests asserting every number above, plus a
-│                                back-dated new entry and a scrap row
+├── tests/test_engine.py      ← 13 unit tests asserting every number above
 ├── .github/workflows/tests.yml ← runs the unit tests on every push
 └── erpnext_demo/
     ├── rate_change.py        ← THE CODE CHANGE for ERPNext: update_purchase_receipt_rate()
@@ -171,7 +170,7 @@ Side effects and limits, worth knowing before using it outside the demo:
 ### Assumptions
 
 - One warehouse (`Stores`), and each day's transactions posted at 10:00 (opening at 09:00).
-- No taxes or additional costs on the Manufacture entry, so the finished good's cost is just the raw material consumed (minus any scrap value).
+- No taxes or additional costs on the Manufacture entry, so the finished good's cost is just the raw material consumed.
 - The 10-Jan Purchase Receipt isn't billed yet. If it were, the rate change belongs on the Purchase Invoice.
 - `engine.py` rounds to 6 decimal places; ERPNext uses its own precision settings.
 
